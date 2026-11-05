@@ -13,6 +13,9 @@
 //! - **OpenAI Responses** (`OPENAI_API_KEY`, base override `LLM_BROWSER_OPENAI_BASE_URL`),
 //! - **Anthropic Messages** (`ANTHROPIC_API_KEY`),
 //! - **Google Gemini** (`GEMINI_API_KEY`, base override `LLM_BROWSER_GOOGLE_BASE_URL`),
+//! - **Google Gemini on the Enterprise Agent Platform** (formerly Vertex AI;
+//!   `GOOGLE_GENAI_USE_ENTERPRISE=true` with Application Default Credentials,
+//!   resolved by the entrypoint provider into a bearer token + project/location),
 //! - **OpenAI-compatible** (Ollama / OpenRouter / DeepSeek / Fireworks, by id +
 //!   key, or an explicit base url),
 //! - **Codex (chatgpt.com)** via the Codex CLI OAuth login
@@ -25,7 +28,7 @@
 
 use std::sync::Arc;
 
-use browser_use_llm::auth::{codex_route, CodexAuth};
+use browser_use_llm::auth::{codex_route, google_enterprise_route, CodexAuth};
 use browser_use_llm::providers::{
     Anthropic, AnthropicConfig, Google, GoogleConfig, OpenAi, OpenAiCompatible, OpenAiConfig,
 };
@@ -61,6 +64,19 @@ pub enum ProviderChoice {
         /// API key (`GEMINI_API_KEY` / `GOOGLE_API_KEY`).
         api_key: String,
         /// Optional base-url override.
+        base_url: Option<String>,
+    },
+    /// Google Gemini on the Gemini Enterprise Agent Platform (formerly Vertex AI):
+    /// `/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent`,
+    /// authenticated with an OAuth2 bearer token from Application Default Credentials.
+    GoogleEnterprise {
+        /// Google Cloud project id.
+        project: String,
+        /// Platform location (`global` or a region such as `us-central1`).
+        location: String,
+        /// The OAuth2 access token, sent as `Authorization: Bearer <access_token>`.
+        access_token: String,
+        /// Optional base-url override (gateway / proxy); default is the platform host for `location`.
         base_url: Option<String>,
     },
     /// A known OpenAI-compatible provider, selected by id (e.g. `openrouter`,
@@ -218,6 +234,18 @@ pub fn build_route(choice: &ProviderChoice, model: &str) -> Result<Route, ModelP
             });
             Ok(provider.model(model))
         }
+        ProviderChoice::GoogleEnterprise {
+            project,
+            location,
+            access_token,
+            base_url,
+        } => Ok(google_enterprise_route(
+            project,
+            location,
+            access_token,
+            base_url.as_deref(),
+            model,
+        )),
         ProviderChoice::OpenAiCompatibleProvider {
             provider_id,
             api_key,
@@ -482,6 +510,26 @@ mod tests {
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
         );
         assert_eq!(header(&route, "x-goog-api-key").as_deref(), Some("g-key"));
+    }
+
+    #[test]
+    fn google_enterprise_route_targets_the_platform_with_a_bearer_token() {
+        let choice = ProviderChoice::GoogleEnterprise {
+            project: "proj".to_string(),
+            location: "global".to_string(),
+            access_token: "ya29.secret".to_string(),
+            base_url: None,
+        };
+        let route = build_route(&choice, "gemini-3.1-pro-preview").unwrap();
+        assert_eq!(
+            route.endpoint.url(),
+            "https://aiplatform.googleapis.com/v1beta1/projects/proj/locations/global/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            header(&route, "authorization").as_deref(),
+            Some("Bearer ya29.secret")
+        );
+        assert!(header(&route, "x-goog-api-key").is_none());
     }
 
     /// The codex route carries the Bearer token + `chatgpt-account-id` header and

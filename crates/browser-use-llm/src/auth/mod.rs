@@ -14,8 +14,15 @@
 
 /// Codex `auth.json` reader + route builder (chatgpt.com login support).
 pub mod codex;
+/// Google Application Default Credentials + the Gemini Enterprise Agent Platform route builder.
+pub mod google_adc;
 
 pub use codex::{
     codex_auth_path, codex_route, load_codex_auth, load_codex_auth_file, CodexAuth, CodexAuthError,
     CODEX_BASE_URL,
+};
+pub use google_adc::{
+    enterprise_requested as google_enterprise_requested, google_enterprise_route,
+    resolve_enterprise_credentials as resolve_google_enterprise_credentials, GoogleAdcError,
+    GoogleEnterpriseCredentials,
 };

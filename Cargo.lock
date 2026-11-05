@@ -332,6 +332,7 @@ dependencies = [
  "futures-util",
  "image",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",
