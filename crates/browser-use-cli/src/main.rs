@@ -2416,11 +2416,23 @@ fn provider_backend_from_env_keys() -> Option<ProviderBackend> {
         Some(ProviderBackend::Openrouter)
     } else if has("DEEPSEEK_API_KEY") {
         Some(ProviderBackend::Deepseek)
-    } else if has("GEMINI_API_KEY") || has("GOOGLE_API_KEY") {
+    } else if has("GEMINI_API_KEY") || has("GOOGLE_API_KEY") || google_enterprise_selected() {
         Some(ProviderBackend::Google)
     } else {
         None
     }
+}
+
+/// `GOOGLE_GENAI_USE_ENTERPRISE=true` (or the legacy `GOOGLE_GENAI_USE_VERTEXAI`) selects the Google
+/// backend on the Gemini Enterprise Agent Platform, where Application Default Credentials replace the key.
+fn google_enterprise_selected() -> bool {
+    ["GOOGLE_GENAI_USE_ENTERPRISE", "GOOGLE_GENAI_USE_VERTEXAI"]
+        .iter()
+        .any(|key| {
+            std::env::var(key).is_ok_and(|value| {
+                matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1")
+            })
+        })
 }
 
 /// `browser-use-terminal run "<task>"`: provider-agnostic task run.
@@ -2450,7 +2462,8 @@ fn run_default(
             anyhow::anyhow!(
                 "no model provider is configured. Configure one in the TUI (`browser`, then \
                  /auth and /model), set a provider API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, \
-                 OPENROUTER_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY, or BROWSER_USE_API_KEY), or use an \
+                 OPENROUTER_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY, or BROWSER_USE_API_KEY), set \
+                 GOOGLE_GENAI_USE_ENTERPRISE=true with Google Application Default Credentials, or use an \
                  explicit command such as `browser-use-terminal run-anthropic \"<task>\"`."
             )
         })?,

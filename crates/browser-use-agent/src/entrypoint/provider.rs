@@ -26,6 +26,9 @@
 //!     (key from `ANTHROPIC_API_KEY` / `LLM_BROWSER_ANTHROPIC_API_KEY`),
 //!   * [`ProviderBackend::Google`]      → [`ProviderChoice::Google`]
 //!     (key from `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `LLM_BROWSER_GOOGLE_API_KEY`),
+//!     or → [`ProviderChoice::GoogleEnterprise`] when `GOOGLE_GENAI_USE_ENTERPRISE=true`
+//!     (Application Default Credentials exchanged for a bearer token; project from
+//!     `GOOGLE_CLOUD_PROJECT` or the credentials, location from `GOOGLE_CLOUD_LOCATION`),
 //!   * [`ProviderBackend::Openrouter`]  → [`ProviderChoice::OpenAiCompatibleProvider`]
 //!     id `"openrouter"` (key from `OPENROUTER_API_KEY`),
 //!   * [`ProviderBackend::Deepseek`]    → [`ProviderChoice::OpenAiCompatibleProvider`]
@@ -52,7 +55,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use browser_use_llm::auth::{load_codex_auth, CodexAuth};
+use browser_use_llm::auth::{
+    google_enterprise_requested, load_codex_auth, resolve_google_enterprise_credentials, CodexAuth,
+};
 use browser_use_llm::route::ModelClient;
 use browser_use_runtime::{
     AgentId as RuntimeAgentId, BrowserConfig as RuntimeBrowserConfig,
@@ -671,6 +676,10 @@ pub enum ProviderResolveError {
     /// (never the token/file contents — the codex reader keeps secrets out of its
     /// error strings).
     Codex(String),
+    /// The Enterprise platform was selected (`GOOGLE_GENAI_USE_ENTERPRISE`) but Application Default
+    /// Credentials could not be resolved into a project + access token. Carries the underlying message
+    /// (never key material).
+    GoogleAdc(String),
     /// The Python worker subprocess could not be started for the run.
     ///
     /// The legacy run path starts ONE [`PythonWorker`] per run (eager, via
@@ -699,6 +708,12 @@ impl std::fmt::Display for ProviderResolveError {
             ProviderResolveError::Route(e) => write!(f, "{e}"),
             ProviderResolveError::Codex(why) => {
                 write!(f, "failed to resolve codex login: {why}")
+            }
+            ProviderResolveError::GoogleAdc(why) => {
+                write!(
+                    f,
+                    "failed to resolve Google Application Default Credentials for the Enterprise platform: {why}"
+                )
             }
             ProviderResolveError::PythonWorker(why) => {
                 write!(f, "failed to start python worker: {why}")
@@ -784,8 +799,10 @@ fn key_env_then_store(
 ///   * `Ok(None)` for [`ProviderBackend::Fake`] (no real provider),
 ///   * `Err(..)` for an absent backend or missing credentials.
 ///
-/// Only file I/O is the codex `~/.codex/auth.json` fallback (and the store read);
-/// no network I/O — this only assembles a [`ProviderChoice`].
+/// File I/O is the codex `~/.codex/auth.json` fallback, the store read, and the
+/// Application Default Credentials file for the Google Enterprise platform; the
+/// latter is also the one network call here (the OAuth2 token exchange that turns
+/// the credentials into the bearer token the route carries).
 pub fn provider_choice_for_backend(
     backend: ProviderBackend,
     store: Option<&Store>,
@@ -841,6 +858,20 @@ pub fn provider_choice_for_backend(
             }))
         }
         ProviderBackend::Google => {
+            let env = |key: &str| env_first(&[key]);
+            if google_enterprise_requested(&env) {
+                // Gemini Enterprise Agent Platform (formerly Vertex AI): Application Default
+                // Credentials (service-account key, `gcloud auth application-default login`, or the
+                // metadata server) become a bearer token + project/location; no API key is involved.
+                let credentials = resolve_google_enterprise_credentials(&env)
+                    .map_err(|e| ProviderResolveError::GoogleAdc(e.to_string()))?;
+                return Ok(Some(ProviderChoice::GoogleEnterprise {
+                    project: credentials.project,
+                    location: credentials.location,
+                    access_token: credentials.access_token,
+                    base_url: env_first(&["LLM_BROWSER_GOOGLE_BASE_URL"]),
+                }));
+            }
             let api_key = key_env_then_store(
                 &[
                     "LLM_BROWSER_GOOGLE_API_KEY",
@@ -851,7 +882,9 @@ pub fn provider_choice_for_backend(
                 "google",
             )
             .ok_or(ProviderResolveError::MissingCredentials(
-                "set GEMINI_API_KEY (or run `auth login google`) for the google backend",
+                "set GEMINI_API_KEY (or run `auth login google`) for the google backend, or \
+                 GOOGLE_GENAI_USE_ENTERPRISE=true with Application Default Credentials for the \
+                 Gemini Enterprise Agent Platform",
             ))?;
             Ok(Some(ProviderChoice::Google {
                 api_key,
